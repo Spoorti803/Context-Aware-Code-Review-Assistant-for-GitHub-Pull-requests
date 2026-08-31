@@ -383,6 +383,31 @@ curl -X POST http://localhost:8000/webhook \
 
 ---
 
+## Research status & open roadmap
+
+This project began as a research submission (evaluated on 100+ real pull requests, comparing diff-only vs. diff+surrounding-context vs. the full Tree-sitter-based pipeline — see results below). It was submitted to an academic venue and was **not accepted in its current form**. The core engineering and evaluation are solid, but reviewers felt it wasn't yet positioned as a research contribution. If you're interested in taking this further — academically or otherwise — here's exactly what's needed, straight from reviewer feedback:
+
+1. **Baseline comparison against existing tools.** The current evaluation only compares this project's own three internal configurations against each other. To make a stronger case, compare against an established tool (e.g. GitHub Copilot PR reviews, CodeRabbit, or a plain "GPT-4o with full diff, no Tree-sitter" baseline).
+2. **Sharper novelty claim.** The most interesting contribution here is likely the **caller-graph context retrieval** (seeing which functions call a changed function, not just the function itself — see the parameter-rename example in the results below). A stronger paper would center this specifically and isolate its contribution via ablation, rather than treating it as one row in a results table.
+3. **Deeper experimental validation.** Currently reported as one aggregate table across 100+ PRs. Reviewers wanted to see: breakdowns by issue type / PR size / language, statistical significance testing between configurations, and a systematic (not just anecdotal) error analysis of false positives/negatives.
+4. **Justification for scoring weights.** The relevance-scoring formula uses fixed constants (α=3.0, β=0.1, γ=2.0 — see Table 2 in the paper). Right now these are intuition-based; empirically tuning them (or running an ablation without one term) would strengthen the design section significantly.
+
+### Evaluation results (for reference)
+
+| Configuration | Precision | Recall | F1-Score |
+|---|---|---|---|
+| Diff-only | 0.77 | 0.77 | 0.77 |
+| Diff + Surrounding | 0.71 | 0.89 | 0.79 |
+| **Full pipeline** | **0.88** | 0.75 | **0.81** |
+
+Full pipeline achieves the best precision and F1. Notably, it was the only configuration that correctly caught cases where a developer renamed a function parameter — harmless within the function itself, but breaking several callers elsewhere in the codebase that passed arguments by name. Diff-only and surrounding-context configurations had no visibility into those callers and missed this class of bug entirely.
+
+The raw per-PR evaluation data (human-identified issues vs. bot-flagged issues per pull request) was not preserved after the original evaluation run — see `compute_metrics.py` in this repo for a script to recompute precision/recall/F1 from scratch if you re-run the evaluation.
+
+If you build on this and get it published, or just want to talk through ideas, feel free to open an issue or reach out — happy to hear how it goes.
+
+---
+
 ## Contributing
 
 Contributions are welcome. To add support for a new language:
@@ -401,4 +426,6 @@ For general contributions:
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE). You're free to fork, modify, and reuse this code — including commercially — as long as the original copyright notice in `LICENSE` is preserved.
+
+If this project is useful in your own research or work, an informal citation/mention linking back to this repository is appreciated (not required).
