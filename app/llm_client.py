@@ -72,7 +72,7 @@ def _call_groq(messages: list[dict]) -> str:
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "messages": full_messages,
             "max_tokens": 2048,
             "temperature": 0,
