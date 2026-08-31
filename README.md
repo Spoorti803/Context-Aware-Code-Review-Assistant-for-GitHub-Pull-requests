@@ -1,9 +1,3 @@
-1. docker run -d -p 6379:6379 redis
-2. celery -A app.worker worker --loglevel=info --pool=solo
-3. uvicorn app.main:app --reload --port 8000
-4. .\ngrok.exe http 8000
-
-
 
 # PR Review Bot
 
