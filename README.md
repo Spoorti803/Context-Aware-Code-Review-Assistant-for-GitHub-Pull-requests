@@ -12,18 +12,18 @@ Manual code review is thorough but slow, inconsistent, and bottlenecked by revie
 
 **Catching a breaking change via caller-context analysis** — a function parameter was renamed (`is_active` → `active`). The change looks harmless in isolation, but the bot searched the rest of the codebase, found a caller still using the old keyword argument, and flagged the exact `TypeError` this would cause:
 
-![Breaking change caught via caller-context](screenshots/screenshot-05-breaking-change-overview.png)
-![Inline comment detail](screenshots/screenshot-06-breaking-change-comment.png)
+![Breaking change caught via caller-context](screenshot/screenshot-05-breaking-change-overview.png)
+![Inline comment detail](screenshot/screenshot-06-breaking-change-comment.png)
 
 **Catching real security issues** — SQL injection from string-concatenated queries, insecure MD5 password hashing, and missing error handling on file I/O:
 
-![SQL injection caught](screenshots/screenshot-01-sql-injection.png)
-![Insecure hashing caught](screenshots/screenshot-02-insecure-hash.png)
-![Missing error handling caught](screenshots/screenshot-03-missing-error-handling.png)
+![SQL injection caught](screenshot/screenshot-01-sql-injection.png)
+![Insecure hashing caught](screenshot/screenshot-02-insecure-hash.png)
+![Missing error handling caught](screenshot/screenshot-03-missing-error-handling.png)
 
 The bot also independently caught an issue that wasn't deliberately planted — a missing `None` check that could cause a downstream failure:
 
-![Unplanted bug caught](screenshots/screenshot-04-none-check.png)
+![Unplanted bug caught](screenshot/screenshot-04-none-check.png)
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
