@@ -1,25 +1,72 @@
-
 # PR Review Bot
 
+Automated GitHub PR review bot using Tree-sitter for code context and Claude/GPT-4o for AI-generated inline comments.
+
 An automated code review bot that listens to GitHub pull request events, retrieves rich code context using Tree-sitter, and posts inline review comments via an LLM (Claude or GPT-4o).
+
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-active-brightgreen)
 
 ---
 
 ## Table of Contents
 1. [How it works](#how-it-works)
-2. [Prerequisites](#prerequisites)
-3. [Project structure](#project-structure)
-4. [Installation](#installation)
-5. [Configuration](#configuration)
-6. [Running the bot](#running-the-bot)
-7. [Setting up the GitHub webhook](#setting-up-the-github-webhook)
-8. [Exposing localhost with ngrok (for development)](#exposing-localhost-with-ngrok-for-development)
-9. [Testing](#testing)
-10. [Troubleshooting](#troubleshooting)
+2. [Supported languages](#supported-languages)
+3. [Prerequisites](#prerequisites)
+4. [Project structure](#project-structure)
+5. [Installation](#installation)
+6. [Configuration](#configuration)
+7. [Running the bot](#running-the-bot)
+8. [Setting up the GitHub webhook](#setting-up-the-github-webhook)
+9. [Exposing localhost with ngrok (for development)](#exposing-localhost-with-ngrok-for-development)
+10. [Testing](#testing)
+11. [Cost & rate limits](#cost--rate-limits)
+12. [Known limitations](#known-limitations)
+13. [Troubleshooting](#troubleshooting)
+14. [Contributing](#contributing)
+15. [License](#license)
 
 ---
 
 ## How it works
+
+```
+Developer opens PR
+        |
+        v
+GitHub sends webhook  ---->  FastAPI (/webhook)
+                                   |
+                                   | verifies HMAC-SHA256 signature
+                                   v
+                              Redis queue  ---->  200 OK returned to GitHub
+                                   |
+                                   v
+                          Celery worker picks up job
+                                   |
+                     +-------------+--------------+
+                     |                             |
+             Fetch PR diff                 Parse changed files
+             (GitHub API)                  and line numbers
+                     |                             |
+                     +-------------+--------------+
+                                   |
+                                   v
+                     Tree-sitter: extract full function
+                     bodies + callers, ±20 context lines
+                                   |
+                                   v
+                     Rank & select top 5-8 snippets
+                                   |
+                                   v
+                     Build prompt  ---->  LLM (Claude / GPT-4o)
+                                   |
+                                   v
+                     Parse JSON response
+                                   |
+                                   v
+                     Post inline review comments to GitHub PR
+```
 
 1. A developer opens a Pull Request on GitHub.
 2. GitHub fires a webhook `POST /webhook` to your server.
@@ -33,6 +80,17 @@ An automated code review bot that listens to GitHub pull request events, retriev
    - Ranks and selects the top 5–8 most relevant snippets.
 6. Builds a prompt and sends it to the LLM (Claude or GPT-4o).
 7. Parses the JSON response and posts inline review comments back to GitHub.
+
+---
+
+## Supported languages
+
+Tree-sitter context extraction currently supports:
+
+- **Python** (`tree-sitter-python`)
+- **JavaScript** (`tree-sitter-javascript`)
+
+Other languages will fall back to diff-only context (no function/caller extraction) until their grammar is added. See [Contributing](#contributing) for how to add a new language.
 
 ---
 
@@ -72,7 +130,9 @@ pr_review_bot/
 │   ├── test_context.py
 │   └── test_webhook.py
 ├── .env.example
+├── .gitignore
 ├── requirements.txt
+├── LICENSE
 └── README.md
 ```
 
@@ -127,6 +187,8 @@ print('Tree-sitter grammars built.')
 "
 ```
 
+> **Note:** these cloned grammar folders (`tree-sitter-python/`, `tree-sitter-javascript/`) are build-time dependencies, not part of the source tree — they're gitignored and rebuilt locally via the command above rather than committed.
+
 ### 5. Start Redis
 
 ```bash
@@ -155,7 +217,7 @@ Copy `.env.example` to `.env` and fill in your values:
 cp .env.example .env
 ```
 
-Edit `.env`:
+`.env.example` looks like this:
 
 ```env
 # GitHub
@@ -170,6 +232,8 @@ LLM_PROVIDER=anthropic         # "anthropic" or "openai"
 # Redis
 REDIS_URL=redis://localhost:6379/0
 ```
+
+> **Never commit your real `.env` file.** It's already listed in `.gitignore`, but double-check with `git status` before every commit if you're new to git.
 
 **How to get a GitHub PAT:**
 1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic).
@@ -204,6 +268,8 @@ celery -A app.worker worker --loglevel=info
 ```
 
 You should see: `celery@hostname ready.`
+
+> On Windows, use `--pool=solo` for local development (`celery -A app.worker worker --loglevel=info --pool=solo`). This runs one task at a time — fine for testing, but not meant for production concurrency. For production, use `--pool=prefork` on Linux with multiple workers.
 
 ### Terminal 3 — Redis (if not running as a service)
 
@@ -255,7 +321,7 @@ Forwarding   https://abc123.ngrok.io -> http://localhost:8000
 
 Use `https://abc123.ngrok.io` as your webhook base URL.
 
-> **Note:** The free ngrok URL changes every time you restart ngrok. Update your GitHub webhook URL whenever this happens.
+> **Note:** The free ngrok URL changes every time you restart ngrok. Update your GitHub webhook URL whenever this happens. The `ngrok.exe` binary itself is not tracked in this repo — download it directly from ngrok.com for your platform.
 
 ---
 
@@ -285,6 +351,25 @@ curl -X POST http://localhost:8000/webhook \
 
 ---
 
+## Cost & rate limits
+
+- Each LLM call scales with prompt size — large PRs with many changed files mean larger prompts and higher per-review cost. Consider capping the number of files/snippets reviewed per PR.
+- Watch GitHub API rate limits (5,000 requests/hour for authenticated PATs) if you're running this against many repos or high PR volume.
+- Watch your LLM provider's rate limits and token quotas (Anthropic/OpenAI), especially under concurrent Celery workers.
+- No built-in cost cap currently exists in this project — add one (e.g. max tokens per prompt, max files per PR) if running this against a busy repo.
+
+---
+
+## Known limitations
+
+- **Single points of failure**: if Redis or the Celery worker goes down mid-job, that review silently fails unless retries/persistence are configured.
+- **`--pool=solo` in dev**: fine for local testing, but processes one task at a time — not representative of production throughput.
+- **No CI/CD pipeline yet**: nothing currently prevents accidental commits of `.env` or secrets; consider adding a pre-commit hook or GitHub Action to scan for secrets.
+- **ngrok URLs rotate on restart** (free tier): requires manually updating the GitHub webhook payload URL each time during development.
+- **Limited language support**: Tree-sitter context extraction only covers Python and JavaScript today.
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -295,3 +380,25 @@ curl -X POST http://localhost:8000/webhook \
 | No comments posted | Check `GITHUB_TOKEN` has `repo` scope. Check the LLM API key is correct. Look at Celery logs for errors. |
 | Tree-sitter `languages.so` not found | Re-run the build step in the Installation section. |
 | ngrok URL expired | Restart ngrok and update the GitHub webhook Payload URL. |
+
+---
+
+## Contributing
+
+Contributions are welcome. To add support for a new language:
+
+1. Add the corresponding Tree-sitter grammar repo to the build step in `context.py`.
+2. Update `Language.build_library` calls to include the new grammar.
+3. Add tests under `tests/` covering function/caller extraction for the new language.
+4. Update the [Supported languages](#supported-languages) section above.
+
+For general contributions:
+1. Fork the repo and create a feature branch.
+2. Run `pytest tests/ -v` before opening a PR — all tests must pass.
+3. Keep PRs focused and small where possible.
+
+---
+
+## License
+
+Licensed under the [MIT License](LICENSE).
