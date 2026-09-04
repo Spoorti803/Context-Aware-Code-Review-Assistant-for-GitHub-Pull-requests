@@ -33,20 +33,21 @@ The bot also independently caught an issue that wasn't deliberately planted — 
 
 ## Table of Contents
 1. [How it works](#how-it-works)
-2. [Supported languages](#supported-languages)
-3. [Prerequisites](#prerequisites)
-4. [Project structure](#project-structure)
-5. [Installation](#installation)
-6. [Configuration](#configuration)
-7. [Running the bot](#running-the-bot)
-8. [Setting up the GitHub webhook](#setting-up-the-github-webhook)
-9. [Exposing localhost with ngrok (for development)](#exposing-localhost-with-ngrok-for-development)
-10. [Testing](#testing)
-11. [Cost & rate limits](#cost--rate-limits)
-12. [Known limitations](#known-limitations)
-13. [Troubleshooting](#troubleshooting)
-14. [Contributing](#contributing)
-15. [License](#license)
+2. [Context retrieval algorithm](#context-retrieval-algorithm)
+3. [Supported languages](#supported-languages)
+4. [Prerequisites](#prerequisites)
+5. [Project structure](#project-structure)
+6. [Installation](#installation)
+7. [Configuration](#configuration)
+8. [Running the bot](#running-the-bot)
+9. [Setting up the GitHub webhook](#setting-up-the-github-webhook)
+10. [Exposing localhost with ngrok (for development)](#exposing-localhost-with-ngrok-for-development)
+11. [Testing](#testing)
+12. [Cost & rate limits](#cost--rate-limits)
+13. [Known limitations](#known-limitations)
+14. [Troubleshooting](#troubleshooting)
+15. [Contributing](#contributing)
+16. [License](#license)
 
 ---
 
@@ -101,6 +102,52 @@ GitHub sends webhook  ---->  FastAPI (/webhook)
    - Ranks and selects the top 5–8 most relevant snippets.
 6. Builds a prompt and sends it to the LLM (Claude or GPT-4o).
 7. Parses the JSON response and posts inline review comments back to GitHub.
+
+---
+
+## Context retrieval algorithm
+
+This is the core of the project — everything lives in `app/context.py` and is orchestrated by `app/tasks.py`. It runs once per changed hunk in a PR and produces a ranked list of code snippets to hand to the LLM.
+
+### 1. Surrounding lines (`get_surrounding_lines`)
+
+For each changed hunk, the bot fetches a fixed ±20-line window around the first changed line of that hunk (clamped so the start never goes below line 1):
+
+```python
+start = max(1, changed_line - window)   # window defaults to 20
+end   = changed_line + window
+```
+
+These lines are pulled directly from GitHub via the contents API (`get_file_lines`) at the PR's head commit, not from a local clone.
+
+### 2. Enclosing function extraction (`extract_function`)
+
+The surrounding lines are parsed into a Tree-sitter AST (Python or JS/TS/JSX/TSX grammar, selected by file extension). The tree is walked recursively looking for any node whose type is one of:
+
+- `function_definition` (Python)
+- `function_declaration`
+- `method_definition`
+- `arrow_function`
+
+Among all matching nodes whose line range contains the changed line, the **smallest** one (fewest lines) is kept — this picks the innermost enclosing function rather than an outer wrapper when functions are nested. The function's name is read off its first `identifier` child, and the full source text of that node is returned along with its start/end line numbers. If no parser exists for the file extension, or no enclosing function is found, this step is skipped and the snippet falls back to diff-only context.
+
+### 3. Caller lookup (`find_callers`)
+
+If a function name was resolved, the bot searches the rest of the repository for that identifier using GitHub's code search API (`search_code`), then narrows the results with the AST rather than trusting the text match: each candidate file is parsed, and the tree is walked for `call` / `call_expression` nodes whose callee text contains the function name. Each match records the filename, line number, and the raw source line as a snippet. Up to 2 call sites are kept per file, and the whole list is capped at `max_callers` (default 5) across all files. This is what lets the bot catch things like a renamed keyword argument breaking a caller elsewhere in the codebase — see the [example output](#example-output) above.
+
+### 4. Ranking & selection (`rank_and_select`)
+
+Every snippet (surrounding lines + function body + callers, one per changed hunk) is scored with a fixed linear formula before the top ones are kept:
+
+```python
+score = changed_count * 3 + fn_len * 0.1 + caller_count * 2
+```
+
+- `changed_count` — number of added/removed lines (`+`/`-`) in that hunk
+- `fn_len` — number of lines in the extracted function body (0 if extraction failed)
+- `caller_count` — number of caller call-sites found for that function
+
+Snippets are sorted by this score, descending, and truncated to `max_snippets` (the pipeline calls this with **7**). This keeps prompt size bounded on large PRs while prioritizing hunks that touch more code, sit in larger functions, or have more call sites elsewhere (i.e. higher blast radius). The weights (3, 0.1, 2 — labeled α, β, γ in the project's write-up) are hand-picked, not empirically tuned; see [Research status & open roadmap](#research-status--open-roadmap) for a note on that.
 
 ---
 
